@@ -1,50 +1,50 @@
-from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict, load_dataset
+from datasets import Dataset, DatasetDict, load_dataset
 from transformers import DataCollatorForSeq2Seq
 
 from constants import MAX_INPUT_LENGTH, MAX_TARGET_LENGTH
 
 
-def build_dataset() -> DatasetDict | Dataset | IterableDatasetDict | IterableDataset:
+def build_dataset() -> DatasetDict:
     """
-    Build the dataset using streaming to avoid compatibility issues.
+    Build the dataset using TED Talks which has high quality translations.
     """
-    # 使用streaming方式加载数据集，避免pickle问题
+    print("Loading TED Talks dataset...")
+
     try:
-        # 首先尝试正常加载
-        dataset = load_dataset("wmt19", "zh-en")
-        train_dataset = dataset["train"].select(range(100000))
-        validation_dataset = dataset["train"].select(range(100000, 102000))
-        test_dataset = dataset["validation"]
-    except Exception as e:
-        # 如果正常加载失败，使用流式加载
-        print("Using streaming mode due to compatibility issues...")
-        dataset = load_dataset("wmt19", "zh-en", streaming=True)
+        # 使用TED Talks数据集，质量更高
+        dataset = load_dataset("ted_talks_iwslt", "zh-en")
 
-        # 收集训练数据
-        train_samples = []
-        for i, sample in enumerate(dataset["train"]):
-            if i >= 100000:
-                break
-            train_samples.append(sample)
+        # 使用完整的训练集
+        train_dataset = dataset["train"]
+        # 限制训练数据量以适应时间约束
+        if len(train_dataset) > 100000:
+            train_dataset = train_dataset.select(range(100000))
 
-        # 收集验证数据
-        validation_samples = []
-        skip_count = 0
-        for i, sample in enumerate(dataset["train"]):
-            if i >= 100000 and i < 102000:
-                validation_samples.append(sample)
-            elif i >= 102000:
-                break
-
-        # 转换为Dataset对象
-        train_dataset = Dataset.from_list(train_samples)
-        validation_dataset = Dataset.from_list(validation_samples)
+        # 验证集
+        validation_dataset = dataset["validation"]
+        if len(validation_dataset) > 2000:
+            validation_dataset = validation_dataset.select(range(2000))
 
         # 测试集
-        test_samples = []
-        for sample in dataset["validation"]:
-            test_samples.append(sample)
-        test_dataset = Dataset.from_list(test_samples)
+        test_dataset = dataset["test"]
+
+        print(f"Train size: {len(train_dataset)}")
+        print(f"Validation size: {len(validation_dataset)}")
+        print(f"Test size: {len(test_dataset)}")
+
+    except Exception as e:
+        print(f"Error loading TED Talks dataset: {e}")
+        print("Falling back to a smaller high-quality dataset...")
+
+        # 回退到opus100的一个子集
+        dataset = load_dataset("opus100", "zh-en")
+        train_dataset = dataset["train"].select(range(min(50000, len(dataset["train"]))))
+        validation_dataset = dataset["validation"].select(range(min(1000, len(dataset["validation"]))))
+        test_dataset = dataset["test"].select(range(min(1000, len(dataset["test"]))))
+
+        print(f"Train size: {len(train_dataset)}")
+        print(f"Validation size: {len(validation_dataset)}")
+        print(f"Test size: {len(test_dataset)}")
 
     return DatasetDict({
         "train": train_dataset,
@@ -64,8 +64,15 @@ def preprocess_function(examples, prefix, tokenizer, max_input_length, max_targe
     """
     Preprocess the data.
     """
-    inputs = [prefix + ex["zh"] for ex in examples["translation"]]
-    targets = [ex["en"] for ex in examples["translation"]]
+    # 处理不同数据集的格式
+    if "translation" in examples:
+        # wmt19, ted_talks_iwslt格式
+        inputs = [prefix + ex["zh"] for ex in examples["translation"]]
+        targets = [ex["en"] for ex in examples["translation"]]
+    else:
+        # opus100格式
+        inputs = [prefix + ex for ex in examples["zh"]]
+        targets = [ex for ex in examples["en"]]
 
     model_inputs = tokenizer(inputs, max_length=max_input_length, truncation=True)
     labels = tokenizer(text_target=targets, max_length=max_target_length, truncation=True)
