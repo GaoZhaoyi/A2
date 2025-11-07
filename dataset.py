@@ -6,23 +6,46 @@ from constants import MAX_INPUT_LENGTH, MAX_TARGET_LENGTH
 
 def build_dataset() -> DatasetDict | Dataset | IterableDatasetDict | IterableDataset:
     """
-    Build the dataset.
-
-    Returns:
-        The dataset.
-
-    NOTE: You can replace this with your own dataset. Make sure to include
-    the `validation` split and ensure that it is the same as the test split from the WMT19 dataset,
-    Which means that:
-        raw_datasets["validation"] = load_dataset('wmt19', 'zh-en', split="validation")
+    Build the dataset using streaming to avoid compatibility issues.
     """
-    dataset = load_dataset("wmt19", "zh-en")        # 从Hugging Face Hub加载WMT19中文-英文翻译数据集
-    train_dataset = dataset["train"].select(range(100000)) # 从训练集中选择前130万个样本
-    validation_dataset = dataset["train"].select(range(100000, 102000)) # 选择1300000到1302000的样本作为验证集
+    # 使用streaming方式加载数据集，避免pickle问题
+    try:
+        # 首先尝试正常加载
+        dataset = load_dataset("wmt19", "zh-en")
+        train_dataset = dataset["train"].select(range(100000))
+        validation_dataset = dataset["train"].select(range(100000, 102000))
+        test_dataset = dataset["validation"]
+    except Exception as e:
+        # 如果正常加载失败，使用流式加载
+        print("Using streaming mode due to compatibility issues...")
+        dataset = load_dataset("wmt19", "zh-en", streaming=True)
 
-    # NOTE: You should not change the test dataset
-    test_dataset = dataset["validation"]    # 使用原始的验证集作为测试集
-    # 将数据集组织成字典格式，包含训练、验证、测试三个部分
+        # 收集训练数据
+        train_samples = []
+        for i, sample in enumerate(dataset["train"]):
+            if i >= 100000:
+                break
+            train_samples.append(sample)
+
+        # 收集验证数据
+        validation_samples = []
+        skip_count = 0
+        for i, sample in enumerate(dataset["train"]):
+            if i >= 100000 and i < 102000:
+                validation_samples.append(sample)
+            elif i >= 102000:
+                break
+
+        # 转换为Dataset对象
+        train_dataset = Dataset.from_list(train_samples)
+        validation_dataset = Dataset.from_list(validation_samples)
+
+        # 测试集
+        test_samples = []
+        for sample in dataset["validation"]:
+            test_samples.append(sample)
+        test_dataset = Dataset.from_list(test_samples)
+
     return DatasetDict({
         "train": train_dataset,
         "validation": validation_dataset,
@@ -33,13 +56,6 @@ def build_dataset() -> DatasetDict | Dataset | IterableDatasetDict | IterableDat
 def create_data_collator(tokenizer, model):
     """
     Create data collator for sequence-to-sequence tasks.
-
-    Args:
-        tokenizer: Tokenizer object.
-        model: Model object.
-
-    Returns:
-        DataCollatorForSeq2Seq instance.
     """
     return DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
 
@@ -47,37 +63,20 @@ def create_data_collator(tokenizer, model):
 def preprocess_function(examples, prefix, tokenizer, max_input_length, max_target_length):
     """
     Preprocess the data.
-
-    Args:
-        examples: Examples.
-        prefix: Prefix.
-        tokenizer: Tokenizer object.
-        max_input_length: Maximum input length.
-        max_target_length: Maximum target length.
-
-    Returns:
-        Model inputs.
     """
-    inputs = [prefix + ex["zh"] for ex in examples["translation"]]      # 提取中文句子
-    targets = [ex["en"] for ex in examples["translation"]]              # 提取英文句子
+    inputs = [prefix + ex["zh"] for ex in examples["translation"]]
+    targets = [ex["en"] for ex in examples["translation"]]
 
-    model_inputs = tokenizer(inputs, max_length=max_input_length, truncation=True)      # 对中文句子进行分词处理
-    labels = tokenizer(text_target=targets, max_length=max_target_length, truncation=True)  # 对英文句子进行分词处理
+    model_inputs = tokenizer(inputs, max_length=max_input_length, truncation=True)
+    labels = tokenizer(text_target=targets, max_length=max_target_length, truncation=True)
 
-    model_inputs["labels"] = labels["input_ids"]    # 将英文句子作为标签，用于训练时的损失计算
+    model_inputs["labels"] = labels["input_ids"]
     return model_inputs
 
 
 def preprocess_data(raw_datasets: DatasetDict, tokenizer) -> DatasetDict:
     """
     Preprocess the data.
-
-    Args:
-        raw_datasets: Raw datasets.
-        tokenizer: Tokenizer object.
-
-    Returns:
-        Tokenized datasets.
     """
     tokenized_datasets: DatasetDict = raw_datasets.map(
         function=lambda examples: preprocess_function(
